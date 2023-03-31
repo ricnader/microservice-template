@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: admin-api
+spec:
+  containers:
+    - name: container-admin-api
+      image: crbasfagregadev.azurecr.io/admin:latest
+      ports:
+        - containerPort: 5000

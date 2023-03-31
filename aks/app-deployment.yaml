@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-deployment-admin
+spec:
+  selector:
+    matchLabels:
+      name: app-pod-admin
+  template:
+    metadata:
+      labels:
+       name: app-pod-admin
+    spec:
+      containers:
+        - name: container-admin
+          image: crbasfagregadev.azurecr.io/admin:latest
+          ports:
+            - containerPort: 5000
+      imagePullSecrets:
+        - name: acr-secret            

@@ -1,0 +1,183 @@
+trigger:
+- dev
+
+resources:
+- repo: self
+
+variables:
+- group: agrega-admin-api-aks-dev
+
+stages:
+- stage: Test
+  displayName: Running tests
+  jobs:
+  - job: Test
+    displayName: Test
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: UseDotNet@2
+      inputs:
+        version: '6.0.x'
+    - task: DotNetCoreCLI@2
+      displayName: dotnet restore
+      inputs:
+        command: 'restore'
+        projects: '**/*.csproj'
+
+    - task: SonarCloudPrepare@1
+      inputs:
+        SonarCloud: '$(sonarCloudServiceConnection)'
+        organization: '$(sonarCloudOrganization)'
+        scannerMode: 'MSBuild'
+        projectKey: '$(sonarProjectKey)'
+        projectName: '$(sonarProjectName)'
+        extraProperties: |
+            sonar.coverageReportPaths="./sonarqubecoverage/SonarQube.xml"
+
+    - task: DotNetCoreCLI@2
+      displayName: dotnet build
+      inputs:
+        command: 'build'
+        projects: '**/*.csproj'
+
+    - task: DotNetCoreCLI@2
+      displayName: dotnet test for sonar
+      inputs:
+        command: 'test'
+        projects: '**/*.Test.csproj'
+        arguments: '--logger "trx;LogFileName=test_results.xml" /p:CollectCoverage=true --collect:"XPlat Code Coverage" '  
+
+    - script: 'dotnet tool install --global dotnet-reportgenerator-globaltool --version 4.5.8'  
+      displayName: 'Install ReportGenerator tool'  
+
+    - script: 'reportgenerator " -reports:$(Agent.TempDirectory)/**/coverage.cobertura.xml" "-targetdir:sonarqubecoverage" "-reporttypes:SonarQube"'  
+      displayName: 'Create reports for sonar'  
+
+    - task: SonarCloudAnalyze@1
+
+    - task: SonarCloudPublish@1
+      inputs:
+        pollingTimeoutSec: '300'
+
+    - task: DotNetCoreCLI@2
+      displayName: dotnet test for azure
+      inputs:
+        command: 'test'
+        projects: '**/*.Test.csproj'
+        arguments: '--configuration $(BuildConfiguration) --collect "XPlat Code coverage" -- RunConfiguration.DisableAppDomain=true'  
+
+    - script: 'reportgenerator -reports:$(Agent.TempDirectory)/**/coverage.cobertura.xml -targetdir:$(Build.SourcesDirectory)/coverlet/reports -reporttypes:"Cobertura"'  
+      displayName: 'Create reports for azure'  
+
+    - task: PublishCodeCoverageResults@1  
+      displayName: 'Publish code coverage'  
+      inputs:  
+        codeCoverageTool: Cobertura  
+        summaryFileLocation: '$(Build.SourcesDirectory)/coverlet/reports/Cobertura.xml' 
+
+    - upload: aks
+      artifact: aks
+- stage: Build
+  displayName: Build and push stage
+  jobs:
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: Docker@2
+      displayName: Build and push an image to container registry
+      inputs:
+        command: buildAndPush
+        repository: $(imageRepository)
+        dockerfile: $(dockerfilePath)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+          latest
+
+- stage: Deploy_aks
+  displayName: Deploy Azure Kubernetes Service
+  dependsOn: Build
+
+  jobs:
+  - deployment: Deploy
+    displayName: Deploy
+    pool:
+      vmImage: $(vmImageName)
+    environment: '$(AzureDevOps.appenv)'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: KubernetesManifest@0
+            displayName: Create imagePullSecret
+            inputs:
+              action: createSecret
+              secretName: $(imagePullSecret)
+              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
+              kubernetesServiceConnection: $(kubeSC)
+              
+          # - task: KubernetesManifest@0
+          #   displayName: Deploy to Kubernetes cluster
+          #   inputs:
+          #     kubernetesServiceConnection: $(kubeSC)
+          #     action: deploy
+          #     manifests: |
+          #       $(Pipeline.Workspace)/aks/$(aksNamespace)api.yaml
+          #     imagePullSecrets: |
+          #       $(imagePullSecret)
+          #     containers: |
+          #       $(containerRegistry)/$(imageRepository):$(tag)
+          
+          - task: KubernetesManifest@0
+            displayName: Deploy to Kubernetes cluster
+            inputs:
+              kubernetesServiceConnection: $(kubeSC)
+              action: deploy
+              manifests: |
+                $(Pipeline.Workspace)/aks/namespace.yaml
+              imagePullSecrets: |
+                $(imagePullSecret)
+              containers: |
+                $(containerRegistry)/$(imageRepository):$(tag)          
+
+          - task: KubernetesManifest@0
+            displayName: Deploy to Kubernetes cluster
+            inputs:
+              kubernetesServiceConnection: $(kubeSC)
+              namespace: $(aksNamespace)
+              action: deploy
+              manifests: |
+                $(Pipeline.Workspace)/aks/app-pod.yaml
+              imagePullSecrets: |
+                $(imagePullSecret)
+              containers: |
+                $(containerRegistry)/$(imageRepository):$(tag)
+
+          - task: KubernetesManifest@0
+            displayName: Deploy to Kubernetes cluster
+            inputs:
+              kubernetesServiceConnection: $(kubeSC)
+              namespace: $(aksNamespace)
+              action: deploy
+              manifests: |
+                $(Pipeline.Workspace)/aks/app-deployment.yaml
+              imagePullSecrets: |
+                $(imagePullSecret)
+              containers: |
+                $(containerRegistry)/$(imageRepository):$(tag)                
+
+          - task: KubernetesManifest@0
+            displayName: Deploy to Kubernetes cluster
+            inputs:
+              kubernetesServiceConnection: $(kubeSC)
+              namespace: $(aksNamespace)
+              action: deploy
+              manifests: |
+                $(Pipeline.Workspace)/aks/ingress.yaml
+              imagePullSecrets: |
+                $(imagePullSecret)
+              containers: |
+                $(containerRegistry)/$(imageRepository):$(tag) 
